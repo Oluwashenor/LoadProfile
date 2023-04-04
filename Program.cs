@@ -1,10 +1,8 @@
-﻿using Azure;
-using CsvHelper;
+﻿using CsvHelper;
+using LoadProfile;
 using Microsoft.Data.SqlClient;
 using System.Data;
 using System.Diagnostics;
-using System.Diagnostics.Metrics;
-using System.Formats.Asn1;
 using System.Globalization;
 
 internal class Program
@@ -13,52 +11,42 @@ internal class Program
 	{
 		int current = 0;
 		Stopwatch stopwatch = Stopwatch.StartNew();
-		var listOfMeters = new List<Meters>();
+		var listOfMeters = _fileReader();
 		DateTime today = DateTime.Today;
 		DateTime start = new DateTime(today.Year, today.Month, 1).AddMonths(-1);
 		DateTime end = start.AddMonths(1).AddMinutes(-1);
-
 		var loadProfiles = new List<LoadProfileDTO>();
-		var readPath = @"c:\Users\Shenor\Desktop\shenor\CSV\loadProfileMeter.csv";
-		using (var reader = new StreamReader(readPath))
-		using (var csv = new CsvReader(reader, CultureInfo.InvariantCulture))
+		
+		//var data = _getLoadProfileData(listOfMeters, start, end);	
+
+		using (SqlConnection connection = new SqlConnection(Constants.connectionString))
 		{
-			var records = csv.GetRecords<Meters>();
-			listOfMeters.AddRange(records);
-		}
-		listOfMeters.ForEach(meter =>
-		{
-			//var meterLatestLoadProfileData = _timeMachine(meter.MeterNumber, start, end); 
-			var meterLatestLoadProfileData = _getLoadProfileData(meter.MeterNumber, start, end);
-			current = current + 1;
-			Console.WriteLine("Row {0} Completed",current);
-			if (meterLatestLoadProfileData != null)
+			connection.Open();
+			Console.WriteLine("Connection to Db Successful");
+			listOfMeters.ForEach(meter =>
 			{
-				Console.WriteLine("Row {0} has Data", current);
-				meter.ReadingPeriod = meterLatestLoadProfileData.Period;
-			}
-			else Console.WriteLine("No Record was found for Meter Number {0}", meter.MeterNumber);
-		});
-		var writePath = @"c:\Users\Shenor\Desktop\shenor\CSV\meterWriter.csv";
-		using (var writer = new StreamWriter(writePath))
-		using (var csv = new CsvWriter(writer, CultureInfo.InvariantCulture))
-		{
-			csv.WriteRecords(listOfMeters);
+				var meterLatestLoadProfileData = _timeMachine(meter.MeterNumber, end, connection);
+				current = current + 1;
+				Console.WriteLine("Row {0} Completed", current);
+				if (meterLatestLoadProfileData != null)
+				{
+					Console.WriteLine("Row {0} has Data", current);
+					meter.ReadingPeriod = meterLatestLoadProfileData.Period;
+				}
+				else Console.WriteLine("No Record was found for Meter Number {0}", meter.MeterNumber);
+			});
+			Console.WriteLine("Closing connection to Database.........");
 		}
+		_fileWriter(listOfMeters);
 		stopwatch.Stop();
 		Console.WriteLine("Elapsed time: {0} ms", stopwatch.ElapsedMilliseconds);
 	}
 
-	private static LoadProfileDTO _getLoadProfileData(string meterNumber, DateTime start, DateTime end)
+	private static LoadProfileDTO _getLoadProfileData(string meterNumber, DateTime start, DateTime end, SqlConnection connection)
 	{
-		string connectionString = "Server=(localdb)\\mssqllocaldb;Database=Chandler;Trusted_Connection=True;MultipleActiveResultSets=true";
-		
 		LoadProfileDTO response = null;
-		using (SqlConnection connection = new SqlConnection(connectionString))
+		using (SqlCommand command = new SqlCommand(Constants.storedProcedure, connection))
 		{
-			connection.Open();
-			using (SqlCommand command = new SqlCommand("GetLoadProfileData_with_time", connection))
-			{
 				command.CommandType = CommandType.StoredProcedure;
 				command.Parameters.Add(new SqlParameter("@MeterNumber", SqlDbType.NVarChar) { Value = meterNumber });
 				command.Parameters.Add(new SqlParameter("@StartDate", SqlDbType.DateTime) { Value = start });
@@ -81,39 +69,100 @@ internal class Program
 						//Pick First and Add to List on Top
 						response = loadProfileData.Last();
 					}
-					
+				}
+			}
+		return response;
+	}
+
+	private static List<Meters> _getLoadProfileData(List<Meters> meters, DateTime start, DateTime end)
+	{
+		int index = 0;
+		List<Meters> response = new List<Meters>();
+		using (SqlConnection connection = new SqlConnection(Constants.connectionString))
+		{
+			connection.Open();
+			using (SqlCommand command = new SqlCommand(Constants.storedProcedure, connection))
+			{
+				command.CommandType = CommandType.StoredProcedure;
+				command.Parameters.Add(new SqlParameter("@MeterNumber", SqlDbType.NVarChar));
+				command.Parameters.Add(new SqlParameter("@StartDate", SqlDbType.DateTime));
+				command.Parameters.Add(new SqlParameter("@EndDate", SqlDbType.DateTime));
+
+                foreach (var meter in meters)
+                {
+				    index = index + 1;
+					command.Parameters["@MeterNumber"].Value = meter.MeterNumber;
+					command.Parameters["@StartDate"].Value = start;
+					command.Parameters["@EndDate"].Value = end;
+					using (SqlDataAdapter adapter = new SqlDataAdapter(command))
+					{
+						DataTable dataTable = new DataTable();
+						adapter.Fill(dataTable);
+						if (dataTable.AsEnumerable().Any())
+						{
+							var data = dataTable.AsEnumerable().Select(x => new LoadProfileDTO
+							{
+								Period = (DateTime)x[2],
+							}).ToList();
+							var loadProfileData = data.OrderBy(x => x.Period);
+							var latest = loadProfileData.Last();
+							meter.ReadingPeriod = latest.Period;
+						}
+					}
+					Console.WriteLine("Row {0} Completed",index);
 				}
 			}
 		}
 		return response;
 	}
 
-
-	private static LoadProfileDTO _timeMachine(string meterNumber,DateTime start, DateTime end)
+	private static LoadProfileDTO _timeMachine(string meterNumber, DateTime end, SqlConnection connection)
 	{
-		var beginningOfDate = new DateTime(end.Year, end.Month, 1);
-		var daysDifference = (end - beginningOfDate).TotalDays;
+		var response = new LoadProfileDTO();
+		var beginningOfMonth = new DateTime(end.Year, end.Month, 1);
+		var daysDifference = (end - beginningOfMonth).TotalDays;
 		if (daysDifference > 3)
 		{
 			DateTime newStartDate = end.AddDays(-3);
 			DateTime newEndDate = end;
-			var loadprofile = _getLoadProfileData(meterNumber, newStartDate, newEndDate);
-			loadprofile = null;
+			var loadprofile = _getLoadProfileData(meterNumber, newStartDate, newEndDate, connection);
 			if(loadprofile == null)
 			{
-				_timeMachine(meterNumber, newStartDate, newEndDate);
+				return _timeMachine(meterNumber, newStartDate, connection);
 			}
 			return loadprofile;
 		}
 		else
 		{
-			DateTime newStartDate = new DateTime(end.Year, end.Month, 1);
+			DateTime start = new DateTime(end.Year, end.Month, 1);
 			DateTime newEndDate = end;
-			var loadprofile = _getLoadProfileData(meterNumber, start, end);
-			return loadprofile;
+			var loadprofileFinal = _getLoadProfileData(meterNumber, start, end, connection);
+			return loadprofileFinal;
 		}
-		
-		
 	}
 
+	private static void _fileWriter(List<Meters> meters)
+	{
+		Console.WriteLine("Trying to write records to file.........");
+		var writePath = @"c:\Users\Shenor\Desktop\shenor\CSV\meterWriter.csv";
+		using (var writer = new StreamWriter(writePath))
+		using (var csv = new CsvWriter(writer, CultureInfo.InvariantCulture))
+		{
+			csv.WriteRecords(meters);
+		}
+	}
+
+	private static List<Meters> _fileReader()
+	{
+		Console.WriteLine("Trying to read records from file.........");
+		var listOfMeters = new List<Meters>();
+		var readPath = @"c:\Users\Shenor\Desktop\shenor\CSV\loadProfileMeter.csv";
+		using (var reader = new StreamReader(readPath))
+		using (var csv = new CsvReader(reader, CultureInfo.InvariantCulture))
+		{
+			var records = csv.GetRecords<Meters>();
+			listOfMeters.AddRange(records);
+		}
+		return listOfMeters;
+	}
 }
