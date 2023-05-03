@@ -2,7 +2,7 @@
 
 public class Meters
 {
-	public string MeterNumber { get; set; }
+	public string? MeterNumber { get; set; }
 	public DateTime? ReadingPeriod { get; set; }
 }
 
