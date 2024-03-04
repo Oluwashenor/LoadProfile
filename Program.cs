@@ -17,8 +17,6 @@ internal class Program
         DateTime end = start.AddMonths(1).AddMinutes(-1);
         var loadProfiles = new List<LoadProfileDTO>();
 
-        //var data = _getLoadProfileData(listOfMeters, start, end);	
-
         using (SqlConnection connection = new(Constants.connectionString))
         {
             connection.Open();
@@ -61,53 +59,11 @@ internal class Program
                     MeterNumber = x[0].ToString(),
                     Description = x[1].ToString(),
                     Period = (DateTime)x[2],
-                    Pnet = x[3].ToString(),
-                    Snet = x[4].ToString(),
+                    Pnet = x[3] != DBNull.Value ? (double?)x[3] : null,
+                    Snet = x[4] != DBNull.Value ? (double?)x[4] : null,
                 }).ToList();
-                var loadProfileData = data.OrderBy(x => x.Period);
-                //Pick First and Add to List on Top
-                response = loadProfileData.Last();
-            }
-        }
-        return response;
-    }
-
-    //Not using this, nothing wrong with it just not using it
-    private static List<Meters> GetLoadProfileData(List<Meters> meters, DateTime start, DateTime end)
-    {
-        int index = 0;
-        List<Meters> response = new();
-        using (SqlConnection connection = new(Constants.connectionString))
-        {
-            connection.Open();
-            using SqlCommand command = new(Constants.storedProcedure, connection);
-            command.CommandType = CommandType.StoredProcedure;
-            command.Parameters.Add(new SqlParameter("@MeterNumber", SqlDbType.NVarChar));
-            command.Parameters.Add(new SqlParameter("@StartDate", SqlDbType.DateTime));
-            command.Parameters.Add(new SqlParameter("@EndDate", SqlDbType.DateTime));
-
-            foreach (var meter in meters)
-            {
-                index++;
-                command.Parameters["@MeterNumber"].Value = meter.MeterNumber;
-                command.Parameters["@StartDate"].Value = start;
-                command.Parameters["@EndDate"].Value = end;
-                using (SqlDataAdapter adapter = new(command))
-                {
-                    DataTable dataTable = new();
-                    adapter.Fill(dataTable);
-                    if (dataTable.AsEnumerable().Any())
-                    {
-                        var data = dataTable.AsEnumerable().Select(x => new LoadProfileDTO
-                        {
-                            Period = (DateTime)x[2],
-                        }).ToList();
-                        var loadProfileData = data.OrderBy(x => x.Period);
-                        var latest = loadProfileData.Last();
-                        meter.ReadingPeriod = latest.Period;
-                    }
-                }
-                Console.WriteLine("Row {0} Completed", index);
+                var loadProfileData = data.Where(x=>x.Pnet > 0 || x.Snet > 0).OrderBy(x => x.Period);
+                response = loadProfileData.Any() ? loadProfileData.Last() : null;
             }
         }
         return response;
